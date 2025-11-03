@@ -41,7 +41,7 @@ jobs:
       - name: 📂 Package Binaries
         run: |
           mkdir -p firmware
-          find ./build -name "*firmware*.bin" -exec cp {} ./firmware/build-firmware.bin \; || echo "⚠️ Firmware not found"
+          find ./build -name "*build.ino*.bin" -exec cp {} ./firmware/build.ino.bin \; || echo "⚠️ Firmware not found"
           find ./build -name "*partitions*.bin" -exec cp {} ./firmware/build-partitions.bin \; || echo "⚠️ Partitions not found"
           find ./build -name "*bootloader*.bin" -exec cp {} ./firmware/build-bootloader.bin \; || echo "⚠️ Bootloader not found"
 
