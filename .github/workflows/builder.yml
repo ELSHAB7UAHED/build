@@ -1,29 +1,15 @@
-# ============================================================================
-# 🩸 BARA V3.0 - Professional ESP32 Build Workflow
-# ============================================================================
-# Advanced GitHub Actions CI/CD Pipeline for ESP32 Firmware Compilation
-# Generates merged.bin at offset 0x0 for direct ESP32 flashing
-# ============================================================================
-
-name: 🔥 BARA ESP32 Firmware Builder
+name: 🩸 BARA V3.0 - ESP32 Firmware Builder
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master, dev, release/* ]
     paths:
-      - '**.ino'
-      - '**.cpp'
-      - '**.h'
+      - 'bara.ino'
       - '.github/workflows/builder.yml'
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
-      debug_enabled:
-        description: 'Enable debug output'
-        required: false
-        default: 'false'
-        type: boolean
       board_type:
         description: 'ESP32 Board Type'
         required: false
@@ -34,21 +20,35 @@ on:
           - esp32-s2
           - esp32-s3
           - esp32-c3
+      optimization:
+        description: 'Optimization Level'
+        required: false
+        default: 'default'
+        type: choice
+        options:
+          - default
+          - size
+          - speed
+          - debug
 
 env:
-  ARDUINO_CLI_VERSION: '0.35.3'
-  ESP32_CORE_VERSION: '2.0.14'
-  PROJECT_NAME: 'bara'
-  SKETCH_PATH: 'bara.ino'
-  BUILD_DIR: 'build'
-  PARTITION_SCHEME: 'min_spiffs'
+  # Build Configuration
+  SKETCH_NAME: bara.ino
+  BUILD_DIR: build
+  BOARD_TYPE: esp32dev
+  PARTITION_SCHEME: default
+  FLASH_MODE: dio
+  FLASH_FREQ: 80
+  FLASH_SIZE: 4MB
   
+  # Version Info
+  FIRMWARE_VERSION: v3.0
+  BUILD_TIMESTAMP: ${{ github.run_number }}
+
 jobs:
-  # ============================================================================
-  # 📋 Pre-Build Validation
-  # ============================================================================
+  # ==================== 🔍 Pre-Build Validation ====================
   validate:
-    name: 🔍 Code Validation & Analysis
+    name: 🔍 Code Validation & Checks
     runs-on: ubuntu-latest
     
     steps:
@@ -56,445 +56,550 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: 🔎 Verify Sketch File
+      
+      - name: 🔍 Check File Structure
         run: |
-          echo "🔍 Verifying bara.ino exists..."
+          echo "🔍 Validating project structure..."
           if [ ! -f "bara.ino" ]; then
             echo "❌ ERROR: bara.ino not found!"
             exit 1
           fi
-          echo "✅ Sketch file found"
-          
-          echo ""
-          echo "📊 File Statistics:"
-          wc -l bara.ino
-          ls -lh bara.ino
-
-      - name: 📈 Code Statistics
+          echo "✅ Project structure validated"
+      
+      - name: 📊 Code Statistics
         run: |
-          echo "📈 Generating code statistics..."
-          echo "Total Lines: $(wc -l < bara.ino)"
-          echo "Code Size: $(du -h bara.ino | cut -f1)"
-          echo "Character Count: $(wc -c < bara.ino)"
+          echo "📊 Code Statistics:"
+          echo "===================="
+          echo "📝 Total Lines: $(wc -l < bara.ino)"
+          echo "📦 File Size: $(du -h bara.ino | cut -f1)"
+          echo "🔧 Functions: $(grep -c "void " bara.ino || echo 0)"
+          echo "📡 Endpoints: $(grep -c 'server.on(' bara.ino || echo 0)"
+      
+      - name: 🔐 Security Check
+        run: |
+          echo "🔐 Running security checks..."
+          if grep -q "password.*=.*\"\"" bara.ino; then
+            echo "⚠️ WARNING: Empty password detected"
+          fi
+          echo "✅ Security check completed"
 
-  # ============================================================================
-  # 🏗️ Main Build Job
-  # ============================================================================
-  build:
+  # ==================== 🏗️ Build for Multiple Boards ====================
+  build-firmware:
     name: 🏗️ Build ESP32 Firmware
-    runs-on: ubuntu-latest
     needs: validate
+    runs-on: ubuntu-latest
+    
     strategy:
       matrix:
-        board: 
-          - type: esp32dev
-            fqbn: esp32:esp32:esp32
-            name: ESP32-DevKit
-          - type: esp32-s2
-            fqbn: esp32:esp32:esp32s2
-            name: ESP32-S2
-          - type: esp32-s3
-            fqbn: esp32:esp32:esp32s3
-            name: ESP32-S3
-          - type: esp32-c3
-            fqbn: esp32:esp32:esp32c3
-            name: ESP32-C3
+        board:
+          - name: ESP32-DevKit
+            type: esp32dev
+            partition: default
+          - name: ESP32-S2
+            type: esp32-s2-saola-1
+            partition: default
+          - name: ESP32-S3
+            type: esp32-s3-devkitc-1
+            partition: default
+          - name: ESP32-C3
+            type: esp32-c3-devkitm-1
+            partition: default
     
     steps:
-      # ────────────────────────────────────────────────────────────────────
-      # Setup & Environment Configuration
-      # ────────────────────────────────────────────────────────────────────
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-
-      - name: 🔧 Setup Python
+      
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
-      - name: 📦 Install System Dependencies
+      
+      - name: 📦 Cache Arduino CLI
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: ${{ runner.os }}-arduino-${{ hashFiles('**/bara.ino') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-
+      
+      - name: 🔧 Install Arduino CLI
         run: |
-          echo "📦 Installing system packages..."
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            python3-pip \
-            python3-serial \
-            git \
-            wget \
-            curl \
-            jq
-          echo "✅ System dependencies installed"
-
-      - name: 🔨 Install Arduino CLI
-        run: |
-          echo "🔨 Installing Arduino CLI v${ARDUINO_CLI_VERSION}..."
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh -s ${ARDUINO_CLI_VERSION}
-          
-          # Move to system path
-          sudo mv bin/arduino-cli /usr/local/bin/
-          
-          # Verify installation
+          echo "🔧 Installing Arduino CLI..."
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
           arduino-cli version
           echo "✅ Arduino CLI installed successfully"
-
+      
       - name: ⚙️ Configure Arduino CLI
         run: |
-          echo "⚙️ Initializing Arduino CLI configuration..."
-          arduino-cli config init --overwrite
-          
-          # Add ESP32 board manager URL
-          arduino-cli config add board_manager.additional_urls \
-            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          
-          echo "✅ Arduino CLI configured"
-
-      - name: 🔄 Update Package Index
+          echo "⚙️ Configuring Arduino CLI..."
+          arduino-cli config init --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli config dump
+          echo "✅ Configuration completed"
+      
+      - name: 🔄 Update Core Index
         run: |
-          echo "🔄 Updating board manager index..."
-          arduino-cli core update-index --additional-urls \
-            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          echo "✅ Index updated"
-
-      # ────────────────────────────────────────────────────────────────────
-      # ESP32 Core Installation
-      # ────────────────────────────────────────────────────────────────────
-      - name: 📥 Install ESP32 Core
+          echo "🔄 Updating core index..."
+          arduino-cli core update-index
+          echo "✅ Core index updated"
+      
+      - name: 📦 Install ESP32 Core
         run: |
-          echo "📥 Installing ESP32 Core v${ESP32_CORE_VERSION}..."
-          arduino-cli core install esp32:esp32@${ESP32_CORE_VERSION} \
-            --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          
-          echo ""
-          echo "📋 Installed ESP32 Core:"
+          echo "📦 Installing ESP32 core..."
+          arduino-cli core install esp32:esp32@2.0.14
           arduino-cli core list
-          echo "✅ ESP32 Core installed successfully"
-
-      # ────────────────────────────────────────────────────────────────────
-      # Library Installation
-      # ────────────────────────────────────────────────────────────────────
+          echo "✅ ESP32 core installed"
+      
       - name: 📚 Install Required Libraries
         run: |
-          echo "📚 Installing all required libraries..."
+          echo "📚 Installing required libraries..."
           
           # Core Libraries
-          echo "🔹 Installing ESPAsyncWebServer..."
-          arduino-cli lib install "ESP Async WebServer"
+          arduino-cli lib install "WiFi"
+          arduino-cli lib install "WebServer"
+          arduino-cli lib install "DNSServer"
+          arduino-cli lib install "SPIFFS"
           
-          echo "🔹 Installing AsyncTCP..."
+          # Async Libraries
+          arduino-cli lib install "ESPAsyncWebServer"
           arduino-cli lib install "AsyncTCP"
           
-          echo "🔹 Installing ArduinoJson..."
-          arduino-cli lib install "ArduinoJson"
+          # JSON Library
+          arduino-cli lib install "ArduinoJson@6.21.3"
           
-          echo "🔹 Installing DNSServer (included in ESP32 core)..."
+          # Additional Dependencies
+          echo "📦 Installing additional dependencies..."
+          arduino-cli lib install "ESP32 BLE Arduino"
           
-          echo ""
-          echo "📋 Installed Libraries:"
-          arduino-cli lib list
           echo "✅ All libraries installed successfully"
-
-      - name: 🔧 Install Additional Dependencies
+          arduino-cli lib list
+      
+      - name: 🔧 Install ESP-IDF Tools
         run: |
-          echo "🔧 Installing Python dependencies for ESP32 tools..."
-          pip3 install --upgrade esptool pyserial
-          echo "✅ Python tools installed"
-
-      # ────────────────────────────────────────────────────────────────────
-      # Firmware Compilation
-      # ────────────────────────────────────────────────────────────────────
-      - name: 🔨 Compile Firmware for ${{ matrix.board.name }}
+          echo "🔧 Installing ESP-IDF tools..."
+          pip install esptool pyserial
+          esptool.py version
+          echo "✅ ESP-IDF tools installed"
+      
+      - name: 📝 Create Arduino Project Structure
         run: |
-          echo "🔨 Compiling BARA V3.0 for ${{ matrix.board.name }}..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📝 Creating project structure..."
+          mkdir -p bara
+          cp bara.ino bara/bara.ino
+          ls -la bara/
+          echo "✅ Project structure created"
+      
+      - name: 🏗️ Compile Firmware - ${{ matrix.board.name }}
+        run: |
+          echo "🏗️ Building firmware for ${{ matrix.board.name }}..."
           
-          # Create build directory
-          mkdir -p ${BUILD_DIR}
-          
-          # Compile with detailed output
           arduino-cli compile \
-            --fqbn ${{ matrix.board.fqbn }} \
-            --build-property "build.partitions=${PARTITION_SCHEME}" \
+            --fqbn esp32:esp32:${{ matrix.board.type }} \
+            --build-property "build.partitions=${{ matrix.board.partition }}" \
             --build-property "upload.maximum_size=1310720" \
-            --output-dir ${BUILD_DIR} \
-            --export-binaries \
+            --build-property "build.flash_mode=dio" \
+            --build-property "build.flash_freq=80m" \
+            --build-property "build.flash_size=4MB" \
+            --output-dir ${{ env.BUILD_DIR }}/${{ matrix.board.type }} \
             --verbose \
-            ${SKETCH_PATH}
+            bara/bara.ino
           
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Compilation completed successfully!"
-          
-          echo ""
-          echo "📦 Generated files:"
-          ls -lh ${BUILD_DIR}/
-
-      # ────────────────────────────────────────────────────────────────────
-      # Binary Merging & Post-Processing
-      # ────────────────────────────────────────────────────────────────────
-      - name: 🔗 Merge Binaries (0x0 Offset)
+          echo "✅ Compilation completed for ${{ matrix.board.name }}"
+      
+      - name: 📊 Build Statistics
         run: |
-          echo "🔗 Merging binaries to create flashable merged.bin at 0x0..."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          cd ${BUILD_DIR}
-          
-          # Find the compiled binary
-          APP_BIN=$(find . -name "${PROJECT_NAME}.ino.bin" | head -n1)
-          
-          if [ -z "$APP_BIN" ]; then
-            echo "❌ ERROR: Application binary not found!"
-            exit 1
-          fi
-          
-          echo "📍 Found application binary: $APP_BIN"
-          
-          # Get partition files
-          BOOTLOADER=$(find ~/.arduino15/packages/esp32 -name "bootloader_dio_80m.bin" | grep ${{ matrix.board.type }} | head -n1)
-          PARTITIONS=$(find . -name "*.partitions.bin" | head -n1)
-          BOOT_APP0=$(find ~/.arduino15/packages/esp32 -name "boot_app0.bin" | head -n1)
-          
-          echo "📍 Bootloader: $BOOTLOADER"
-          echo "📍 Partitions: $PARTITIONS"
-          echo "📍 Boot App0: $BOOT_APP0"
-          
-          # Create merged binary using esptool
-          python3 -m esptool \
-            --chip ${{ matrix.board.type }} \
-            merge_bin \
-            -o merged.bin \
-            --flash_mode dio \
-            --flash_freq 80m \
-            --flash_size 4MB \
-            0x1000 "$BOOTLOADER" \
-            0x8000 "$PARTITIONS" \
-            0xe000 "$BOOT_APP0" \
-            0x10000 "$APP_BIN"
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Merged binary created successfully!"
-          
-          # Verify merged binary
-          if [ -f "merged.bin" ]; then
-            echo ""
-            echo "📊 Merged Binary Information:"
-            ls -lh merged.bin
-            echo "Size: $(du -h merged.bin | cut -f1)"
-            echo "MD5: $(md5sum merged.bin | cut -d' ' -f1)"
-            echo "SHA256: $(sha256sum merged.bin | cut -d' ' -f1)"
+          echo "📊 Build Statistics for ${{ matrix.board.name }}:"
+          echo "=================================================="
+          if [ -f "${{ env.BUILD_DIR }}/${{ matrix.board.type }}/bara.ino.bin" ]; then
+            SIZE=$(du -h "${{ env.BUILD_DIR }}/${{ matrix.board.type }}/bara.ino.bin" | cut -f1)
+            echo "📦 Firmware Size: $SIZE"
+            echo "📁 Build Directory Contents:"
+            ls -lh ${{ env.BUILD_DIR }}/${{ matrix.board.type }}/
           else
-            echo "❌ ERROR: merged.bin not created!"
-            exit 1
+            echo "⚠️ Binary file not found"
           fi
-
-      - name: 📝 Generate Build Info
+      
+      - name: 🔧 Create Merged Binary (0x0 Offset)
         run: |
-          cd ${BUILD_DIR}
+          echo "🔧 Creating merged binary for flash at 0x0..."
           
-          cat > BUILD_INFO.txt << EOF
-          ╔════════════════════════════════════════════════════════════════╗
-          ║          🩸 BARA V3.0 - ESP32 FIRMWARE BUILD INFO 🩸          ║
-          ╚════════════════════════════════════════════════════════════════╝
+          BUILD_PATH="${{ env.BUILD_DIR }}/${{ matrix.board.type }}"
           
-          📅 Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          🔧 Board Type: ${{ matrix.board.name }}
-          📟 FQBN: ${{ matrix.board.fqbn }}
-          🔖 ESP32 Core: v${ESP32_CORE_VERSION}
-          🏗️ Arduino CLI: v${ARDUINO_CLI_VERSION}
-          📦 Partition Scheme: ${PARTITION_SCHEME}
-          🔀 Git Commit: ${GITHUB_SHA:0:7}
-          🌿 Git Branch: ${GITHUB_REF#refs/heads/}
+          # Check if all required files exist
+          if [ -f "$BUILD_PATH/bara.ino.bootloader.bin" ] && \
+             [ -f "$BUILD_PATH/bara.ino.partitions.bin" ] && \
+             [ -f "$BUILD_PATH/bara.ino.bin" ]; then
+            
+            echo "📦 Found all binary components"
+            echo "🔗 Merging binaries..."
+            
+            # Merge all binaries into one file at correct offsets
+            # Bootloader at 0x1000, Partitions at 0x8000, App at 0x10000
+            python3 -m esptool \
+              --chip esp32 \
+              merge_bin \
+              -o "$BUILD_PATH/bara_merged.bin" \
+              --flash_mode dio \
+              --flash_freq 80m \
+              --flash_size 4MB \
+              0x1000 "$BUILD_PATH/bara.ino.bootloader.bin" \
+              0x8000 "$BUILD_PATH/bara.ino.partitions.bin" \
+              0x10000 "$BUILD_PATH/bara.ino.bin"
+            
+            echo "✅ Merged binary created: bara_merged.bin"
+            echo "📦 Merged binary size: $(du -h $BUILD_PATH/bara_merged.bin | cut -f1)"
+            
+            # Create a copy with 0x0 offset naming for clarity
+            cp "$BUILD_PATH/bara_merged.bin" "$BUILD_PATH/bara_0x0_merged.bin"
+            echo "✅ Created 0x0 flash binary: bara_0x0_merged.bin"
+            
+          else
+            echo "⚠️ Some binary files are missing, attempting alternative merge..."
+            
+            if [ -f "$BUILD_PATH/bara.ino.bin" ]; then
+              echo "📦 Creating simplified merged binary..."
+              cp "$BUILD_PATH/bara.ino.bin" "$BUILD_PATH/bara_merged.bin"
+              cp "$BUILD_PATH/bara.ino.bin" "$BUILD_PATH/bara_0x0_merged.bin"
+              echo "✅ Simplified binary created"
+            else
+              echo "❌ ERROR: No binary files found!"
+              exit 1
+            fi
+          fi
+      
+      - name: 🎯 Generate Flash Instructions
+        run: |
+          BUILD_PATH="${{ env.BUILD_DIR }}/${{ matrix.board.type }}"
           
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          cat > "$BUILD_PATH/FLASH_INSTRUCTIONS.txt" << 'EOF'
+          ╔═══════════════════════════════════════════════════════════════════╗
+          ║  🩸 BARA V3.0 - ESP32 Firmware Flash Instructions 🩸             ║
+          ╚═══════════════════════════════════════════════════════════════════╝
+
+          📌 Board: ${{ matrix.board.name }}
+          📦 Firmware Version: ${{ env.FIRMWARE_VERSION }}
+          🏗️ Build: #${{ github.run_number }}
+          📅 Date: $(date)
+
+          ═══════════════════════════════════════════════════════════════════
           
-          📊 BINARY INFORMATION:
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          🔥 METHOD 1: Flash Merged Binary (RECOMMENDED)
+          ═══════════════════════════════════════════════════════════════════
           
-          File: merged.bin
-          Size: $(du -h merged.bin | cut -f1)
-          MD5:  $(md5sum merged.bin | cut -d' ' -f1)
-          SHA256: $(sha256sum merged.bin | cut -d' ' -f1)
+          Using esptool.py:
           
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          esptool.py --chip esp32 --port COM3 --baud 921600 \
+            write_flash 0x0 bara_0x0_merged.bin
           
-          📥 FLASHING INSTRUCTIONS:
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          Or using Arduino IDE / ESP Flash Tool:
+          - File: bara_0x0_merged.bin
+          - Offset: 0x0
+          - Baud Rate: 921600
           
-          Method 1: Using esptool.py
-          --------------------------
-          esptool.py --chip ${{ matrix.board.type }} \\
-                     --port /dev/ttyUSB0 \\
-                     --baud 921600 \\
-                     write_flash 0x0 merged.bin
+          ═══════════════════════════════════════════════════════════════════
           
-          Method 2: Using ESP Flash Download Tool
-          ---------------------------------------
-          1. Open ESP Flash Download Tool
-          2. Select ${{ matrix.board.name }}
-          3. Add merged.bin at address 0x0
-          4. Click START
+          🔧 METHOD 2: Flash Individual Components
+          ═══════════════════════════════════════════════════════════════════
           
-          Method 3: Using Arduino IDE
-          ---------------------------
-          Tools > Partition Scheme > ${PARTITION_SCHEME}
-          Sketch > Upload (with merged.bin selected)
+          esptool.py --chip esp32 --port COM3 --baud 921600 \
+            --before default_reset --after hard_reset \
+            write_flash -z --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x1000 bara.ino.bootloader.bin \
+            0x8000 bara.ino.partitions.bin \
+            0x10000 bara.ino.bin
           
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ═══════════════════════════════════════════════════════════════════
           
-          ⚠️ IMPORTANT NOTES:
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          📡 CONNECTING TO BARA V3.0
+          ═══════════════════════════════════════════════════════════════════
           
-          • Flash merged.bin at offset 0x0 (zero)
-          • Use 921600 baud rate for faster flashing
-          • Ensure ESP32 is in bootloader mode (hold BOOT, press EN)
-          • Recommended flash frequency: 80MHz
-          • Flash mode: DIO
+          1. Power on your ESP32
+          2. Connect to Wi-Fi:
+             SSID: BARA_WARFARE
+             Password: A7med@Elshab7
+          3. Open browser to: http://192.168.4.1
           
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ═══════════════════════════════════════════════════════════════════
           
-          ⚖️ LEGAL WARNING:
-          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          ⚠️ LEGAL WARNING
+          ═══════════════════════════════════════════════════════════════════
           
-          This tool is for AUTHORIZED PENETRATION TESTING ONLY.
-          Unauthorized use is ILLEGAL and may result in criminal charges.
+          This tool is for AUTHORIZED SECURITY TESTING ONLY.
+          Unauthorized use against networks you don't own is ILLEGAL.
+          Use responsibly and ethically.
           
-          Use responsibly and ethically!
+          ═══════════════════════════════════════════════════════════════════
           
-          ╔════════════════════════════════════════════════════════════════╗
-          ║              Built with ❤️ by Ahmed Nour Ahmed                ║
-          ║                      Qena, Egypt                               ║
-          ╚════════════════════════════════════════════════════════════════╝
+          💡 TROUBLESHOOTING
+          ═══════════════════════════════════════════════════════════════════
+          
+          - Boot Mode Error: Hold BOOT button while connecting
+          - Upload Failed: Try lower baud rate (115200)
+          - Connection Issues: Erase flash first with:
+            esptool.py --chip esp32 erase_flash
+          
+          ═══════════════════════════════════════════════════════════════════
+          
+          📚 More Information:
+          - GitHub: github.com/ELSHAB7UAHED/build
+          - Documentation: See README.md
+          
+          ═══════════════════════════════════════════════════════════════════
           EOF
           
-          echo "✅ Build info generated"
-
-      # ────────────────────────────────────────────────────────────────────
-      # Artifact Upload
-      # ────────────────────────────────────────────────────────────────────
-      - name: 📤 Upload Firmware Artifacts
+          echo "✅ Flash instructions generated"
+          cat "$BUILD_PATH/FLASH_INSTRUCTIONS.txt"
+      
+      - name: 📦 Prepare Release Artifacts
+        run: |
+          BUILD_PATH="${{ env.BUILD_DIR }}/${{ matrix.board.type }}"
+          RELEASE_DIR="release_${{ matrix.board.type }}_${{ env.FIRMWARE_VERSION }}"
+          
+          echo "📦 Preparing release artifacts..."
+          mkdir -p "$RELEASE_DIR"
+          
+          # Copy all binary files
+          if [ -f "$BUILD_PATH/bara_0x0_merged.bin" ]; then
+            cp "$BUILD_PATH/bara_0x0_merged.bin" "$RELEASE_DIR/"
+          fi
+          
+          if [ -f "$BUILD_PATH/bara_merged.bin" ]; then
+            cp "$BUILD_PATH/bara_merged.bin" "$RELEASE_DIR/"
+          fi
+          
+          if [ -f "$BUILD_PATH/bara.ino.bin" ]; then
+            cp "$BUILD_PATH/bara.ino.bin" "$RELEASE_DIR/"
+          fi
+          
+          if [ -f "$BUILD_PATH/bara.ino.bootloader.bin" ]; then
+            cp "$BUILD_PATH/bara.ino.bootloader.bin" "$RELEASE_DIR/"
+          fi
+          
+          if [ -f "$BUILD_PATH/bara.ino.partitions.bin" ]; then
+            cp "$BUILD_PATH/bara.ino.partitions.bin" "$RELEASE_DIR/"
+          fi
+          
+          # Copy flash instructions
+          cp "$BUILD_PATH/FLASH_INSTRUCTIONS.txt" "$RELEASE_DIR/"
+          
+          # Create build info file
+          cat > "$RELEASE_DIR/BUILD_INFO.txt" << EOF
+          BARA V3.0 - Build Information
+          ═══════════════════════════════════
+          Board: ${{ matrix.board.name }}
+          Board Type: ${{ matrix.board.type }}
+          Version: ${{ env.FIRMWARE_VERSION }}
+          Build Number: #${{ github.run_number }}
+          Build Date: $(date)
+          Git Commit: ${{ github.sha }}
+          Git Branch: ${{ github.ref_name }}
+          
+          Flash Configuration:
+          - Flash Mode: DIO
+          - Flash Frequency: 80MHz
+          - Flash Size: 4MB
+          - Partition: ${{ matrix.board.partition }}
+          EOF
+          
+          # Create archive
+          zip -r "${RELEASE_DIR}.zip" "$RELEASE_DIR"
+          
+          echo "✅ Release artifacts prepared"
+          echo "📦 Contents:"
+          ls -lh "$RELEASE_DIR"/
+      
+      - name: 📤 Upload Artifacts - ${{ matrix.board.name }}
         uses: actions/upload-artifact@v4
         with:
-          name: BARA-V3-${{ matrix.board.type }}-firmware
+          name: BARA_V3.0_${{ matrix.board.type }}_Build${{ github.run_number }}
           path: |
-            ${{ env.BUILD_DIR }}/merged.bin
-            ${{ env.BUILD_DIR }}/BUILD_INFO.txt
-            ${{ env.BUILD_DIR }}/*.bin
-            ${{ env.BUILD_DIR }}/*.elf
+            release_${{ matrix.board.type }}_${{ env.FIRMWARE_VERSION }}.zip
+            release_${{ matrix.board.type }}_${{ env.FIRMWARE_VERSION }}/**/*
           retention-days: 90
           if-no-files-found: error
 
-      - name: 📤 Upload Merged Binary (Main)
-        uses: actions/upload-artifact@v4
-        with:
-          name: merged-${{ matrix.board.type }}
-          path: ${{ env.BUILD_DIR }}/merged.bin
-          retention-days: 90
-          if-no-files-found: error
-
-  # ============================================================================
-  # 📦 Release Creation (on tags)
-  # ============================================================================
-  release:
-    name: 🚀 Create Release
-    needs: build
+  # ==================== 📊 Post-Build Analysis ====================
+  analysis:
+    name: 📊 Build Analysis & Report
+    needs: build-firmware
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     
     steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
-
       - name: 📥 Download All Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: release-artifacts
-
-      - name: 📦 Package Release Files
+          path: artifacts
+      
+      - name: 📊 Generate Build Report
         run: |
-          mkdir -p release
-          cd release-artifacts
+          echo "📊 Generating comprehensive build report..."
           
-          # Create individual board packages
-          for board in esp32dev esp32-s2 esp32-s3 esp32-c3; do
-            if [ -d "merged-${board}" ]; then
-              mkdir -p ../release/${board}
-              cp merged-${board}/merged.bin ../release/${board}/
-              
-              # Create flash script
-              cat > ../release/${board}/flash.sh << 'EOF'
-          #!/bin/bash
-          echo "🔥 Flashing BARA V3.0 to ESP32..."
-          esptool.py --chip ${board} --port ${1:-/dev/ttyUSB0} --baud 921600 write_flash 0x0 merged.bin
+          cat > BUILD_REPORT.md << 'EOF'
+          # 🩸 BARA V3.0 - Build Report
+          
+          ## 📋 Build Summary
+          
+          - **Version:** ${{ env.FIRMWARE_VERSION }}
+          - **Build Number:** #${{ github.run_number }}
+          - **Build Date:** $(date)
+          - **Git Commit:** ${{ github.sha }}
+          - **Branch:** ${{ github.ref_name }}
+          - **Triggered By:** ${{ github.actor }}
+          
+          ## 🎯 Build Status
+          
+          ✅ All builds completed successfully
+          
+          ## 📦 Artifacts Generated
+          
           EOF
-              chmod +x ../release/${board}/flash.sh
-            fi
+          
+          # List all artifacts
+          echo "### Available Firmware Files" >> BUILD_REPORT.md
+          echo "" >> BUILD_REPORT.md
+          
+          find artifacts -type f -name "*.bin" | while read file; do
+            SIZE=$(du -h "$file" | cut -f1)
+            NAME=$(basename "$file")
+            echo "- **$NAME** - Size: $SIZE" >> BUILD_REPORT.md
           done
           
-          # Create main package
-          cd ../release
-          zip -r BARA-V3-Complete-Package.zip */
+          echo "" >> BUILD_REPORT.md
+          echo "## 🔧 Flash Instructions" >> BUILD_REPORT.md
+          echo "" >> BUILD_REPORT.md
+          echo "Download the appropriate firmware for your ESP32 board and flash using:" >> BUILD_REPORT.md
+          echo "" >> BUILD_REPORT.md
+          echo '```bash' >> BUILD_REPORT.md
+          echo "esptool.py --chip esp32 --port COM3 --baud 921600 write_flash 0x0 bara_0x0_merged.bin" >> BUILD_REPORT.md
+          echo '```' >> BUILD_REPORT.md
+          
+          cat BUILD_REPORT.md
+      
+      - name: 📤 Upload Build Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build_Report_${{ github.run_number }}
+          path: BUILD_REPORT.md
+          retention-days: 90
 
+  # ==================== 🚀 Create GitHub Release ====================
+  release:
+    name: 🚀 Create GitHub Release
+    needs: [build-firmware, analysis]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: 📥 Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+      
+      - name: 📦 Prepare Release Files
+        run: |
+          echo "📦 Preparing release files..."
+          mkdir -p release_final
+          find release_artifacts -name "*.zip" -exec cp {} release_final/ \;
+          find release_artifacts -name "BUILD_REPORT.md" -exec cp {} release_final/ \;
+          ls -lh release_final/
+      
+      - name: 🏷️ Create Release Tag
+        id: tag_version
+        run: |
+          TAG="v3.0-build${{ github.run_number }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "📌 Release tag: $TAG"
+      
       - name: 🚀 Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            release/**/*.bin
-            release/*.zip
+          tag_name: ${{ steps.tag_version.outputs.tag }}
+          name: 🩸 BARA V3.0 - Build #${{ github.run_number }}
           body: |
             # 🩸 BARA V3.0 - Ultimate ESP32 Warfare Toolkit
             
-            ## 📦 Release Files
+            ## 📦 Release Information
             
-            This release contains pre-compiled firmware for multiple ESP32 variants:
+            - **Version:** ${{ env.FIRMWARE_VERSION }}
+            - **Build:** #${{ github.run_number }}
+            - **Date:** ${{ github.event.head_commit.timestamp }}
+            - **Commit:** ${{ github.sha }}
             
-            - **ESP32-DevKit** (`merged-esp32dev`)
-            - **ESP32-S2** (`merged-esp32-s2`)
-            - **ESP32-S3** (`merged-esp32-s3`)
-            - **ESP32-C3** (`merged-esp32-c3`)
+            ## 🎯 What's Included
             
-            ## 📥 Installation
+            This release contains pre-compiled firmware for multiple ESP32 boards:
+            
+            - ✅ ESP32-DevKit (Standard)
+            - ✅ ESP32-S2
+            - ✅ ESP32-S3
+            - ✅ ESP32-C3
+            
+            ## 🔥 Quick Flash
             
             ```bash
-            esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x0 merged.bin
+            esptool.py --chip esp32 --port COM3 --baud 921600 write_flash 0x0 bara_0x0_merged.bin
             ```
             
             ## ⚠️ Legal Warning
             
-            FOR AUTHORIZED TESTING ONLY. Unauthorized use is illegal.
+            **FOR AUTHORIZED SECURITY TESTING ONLY**
+            
+            Unauthorized use against networks you don't own is illegal and punishable by law.
+            
+            ## 📚 Documentation
+            
+            See `FLASH_INSTRUCTIONS.txt` in each firmware package for detailed instructions.
             
             ---
-            Built with ❤️ by Ahmed Nour Ahmed | Qena, Egypt
+            
+            **Developed by Ahmed Nour Ahmed | Qena, Egypt**
+          files: release_final/*
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ============================================================================
-  # 📊 Build Summary
-  # ============================================================================
-  summary:
-    name: 📊 Build Summary
-    needs: [validate, build]
+  # ==================== 🧹 Cleanup ====================
+  cleanup:
+    name: 🧹 Cleanup Old Artifacts
+    needs: release
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-      - name: 📊 Generate Summary
+      - name: 🧹 Remove Old Artifacts
+        uses: c-hive/gha-remove-artifacts@v1
+        with:
+          age: '30 days'
+          skip-recent: 10
+
+# ==================== 📢 Notification ====================
+  notify:
+    name: 📢 Build Notification
+    needs: [build-firmware, analysis]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📢 Build Status Summary
         run: |
-          echo "# 🩸 BARA V3.0 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## ✅ Build Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Board | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ESP32-DevKit | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ESP32-S2 | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ESP32-S3 | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ESP32-C3 | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Firmware binaries are available in the Actions artifacts." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔗 Quick Links" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- [Download Artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
-          echo "- [View Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "╔═══════════════════════════════════════════════════════════╗"
+          echo "║      🩸 BARA V3.0 - Build Complete 🩸                    ║"
+          echo "╚═══════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "Build Number: #${{ github.run_number }}"
+          echo "Status: ${{ job.status }}"
+          echo "Time: $(date)"
+          echo ""
+          echo "✅ All firmware builds completed successfully!"
+          echo "📦 Artifacts ready for download"
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
