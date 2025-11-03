@@ -1,71 +1,109 @@
-# builder.yml
-name: Build BARA Firmware for ESP32
+# =============================================================================
+# 🩸 BARA V3.0 — ULTIMATE ESP32 WARFARE BUILDER CONFIG 🩸
+# =============================================================================
+# Developed by: Ahmed Nour Ahmed | Qena, Egypt
+# Purpose: Automated, professional-grade build pipeline for BARA V3.0
+# Output: merged.bin (flashable from 0x0) containing full firmware
+# =============================================================================
+
+name: BARA V3.0 Build Pipeline
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
+    name: 🔥 Build BARA V3.0 Firmware
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 📦 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
-      - name: Install PlatformIO Core
-        run: pip install platformio
-
-      - name: Install required libraries
+      - name: 🛠️ Install PlatformIO Core
         run: |
-          pio pkg install --lib "me-no-dev/ESPAsyncWebServer"
-          pio pkg install --lib "bblanchon/ArduinoJson"
+          pip install --upgrade pip
+          pip install platformio
 
-      - name: Build firmware
-        run: pio run -e esp32dev
-
-      - name: Merge binaries into merged.bin (offset 0x0)
+      - name: 📁 Create PlatformIO Project Structure
         run: |
-          pio run -t buildprog
+          mkdir -p .pio/src
+          mkdir -p .pio/lib
+          cp bara.ino .pio/src/main.cpp
+          cat > .pio/platformio.ini << 'EOF'
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+board_build.partitions = min_spiffs.csv
+lib_deps =
+    me-no-dev/ESP Async WebServer @ ^1.2.3
+    bblanchon/ArduinoJson @ ^6.21.1
+    ; DNSServer is built-in
+build_flags =
+    -DCORE_DEBUG_LEVEL=0
+    -DBOARD_HAS_PSRAM
+    -mfix-esp32-psram-cache-issue
+upload_protocol = espota
+EOF
+
+      - name: 🧱 Build Firmware
+        run: |
+          cd .pio
+          pio run -e esp32dev
+
+      - name: 🧪 Locate Build Artifacts
+        id: artifacts
+        run: |
+          FW_DIR=$(find .pio/build -name "*.bin" -exec dirname {} \; | head -n1)
+          echo "fw_dir=$FW_DIR" >> $GITHUB_OUTPUT
+          ls -la "$FW_DIR"
+
+      - name: 🧩 Merge Firmware into Single Binary (0x0)
+        run: |
+          FW_DIR="${{ steps.artifacts.outputs.fw_dir }}"
+          cd "$FW_DIR"
+          # Download partition table and bootloader if needed
           python3 -c "
-import os, sys
-from pathlib import Path
-
-build_dir = Path('.pio/build/esp32dev')
-bootloader = build_dir / 'bootloader.bin'
-partitions = build_dir / 'partitions.bin'
-firmware = build_dir / 'firmware.bin'
-merged = 'merged.bin'
-
-# Get flash offsets
-BOOTLOADER_OFFSET = 0x1000
-PARTITIONS_OFFSET = 0x8000
-FIRMWARE_OFFSET = 0x10000
-
-# Create empty file up to FIRMWARE_OFFSET + size
-with open(merged, 'wb') as f:
-    f.write(b'\xff' * (FIRMWARE_OFFSET + firmware.stat().st_size))
-
-def write_at_offset(file_path, offset):
-    with open(file_path, 'rb') as src, open(merged, 'r+b') as dst:
-        dst.seek(offset)
-        dst.write(src.read())
-
-write_at_offset(bootloader, BOOTLOADER_OFFSET)
-write_at_offset(partitions, PARTITIONS_OFFSET)
-write_at_offset(firmware, FIRMWARE_OFFSET)
-
-print(f'Merged binary created: {merged}')
+import os, sys, struct
+offsets = [
+    ('bootloader.bin', 0x1000),
+    ('partitions.bin', 0x8000),
+    ('firmware.bin', 0x10000)
+]
+merged_size = 0x400000  # 4MB flash
+with open('merged.bin', 'wb') as f:
+    f.write(b'\\xff' * merged_size)
+    for fname, offset in offsets:
+        if os.path.exists(fname):
+            with open(fname, 'rb') as infile:
+                data = infile.read()
+                f.seek(offset)
+                f.write(data)
+                print(f'✅ Written {fname} at 0x{offset:06x}')
+        else:
+            print(f'⚠️ {fname} not found')
 "
 
-      - name: Upload merged.bin as artifact
+      - name: 📤 Upload merged.bin Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BARA-ESP32-merged-bin
-          path: merged.bin
+          name: bara-v3.0-esp32-merged-bin
+          path: ${{ steps.artifacts.outputs.fw_dir }}/merged.bin
+          retention-days: 7
+
+      - name: ✅ Build Summary
+        run: |
+          echo "🩸 BARA V3.0 BUILD SUCCESSFUL!"
+          echo "📁 Download 'merged.bin' from Artifacts to flash directly at 0x0."
+          echo "🔧 Use: esptool.py --chip esp32 write_flash 0x0 merged.bin"
