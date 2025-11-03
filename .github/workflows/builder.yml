@@ -34,7 +34,7 @@ jobs:
         run: |
           arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
-            --build-property compiler.cpp.extra_flags="BARA-PRO" \
+            --build-property compiler.cpp.extra_flags="-DBUILDER" \
             --output-dir ./build \
             build.ino
 
