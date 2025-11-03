@@ -1,4 +1,4 @@
-name: ESP32 BARA Build
+name: 🩸 BARA ESP32 Builder
 
 on:
   push:
@@ -47,7 +47,7 @@ jobs:
         lib_deps = 
             ESP Async WebServer
             AsyncTCP
-            ArduinoJson
+            bblanchon/ArduinoJson@6.21.3
             DNSServer
         
         build_flags = 
