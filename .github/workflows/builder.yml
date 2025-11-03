@@ -316,7 +316,7 @@ jobs:
         ls -lh release/
 
     - name: 📤 Upload Build Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: bara-esp32-firmware
         path: release/
