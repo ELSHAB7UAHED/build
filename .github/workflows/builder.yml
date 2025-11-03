@@ -34,21 +34,21 @@ jobs:
         run: |
           arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
-            --build-property compiler.cpp.extra_flags="-DBARA_PRO" \
+            --build-property compiler.cpp.extra_flags="-build" \
             --output-dir ./build \
             build.ino
 
       - name: 📂 Package Binaries
         run: |
           mkdir -p firmware
-          find ./build -name "*firmware*.bin" -exec cp {} ./firmware/bara-firmware.bin \; || echo "⚠️ Firmware not found"
-          find ./build -name "*partitions*.bin" -exec cp {} ./firmware/bara-partitions.bin \; || echo "⚠️ Partitions not found"
-          find ./build -name "*bootloader*.bin" -exec cp {} ./firmware/bara-bootloader.bin \; || echo "⚠️ Bootloader not found"
+          find ./build -name "*firmware*.bin" -exec cp {} ./firmware/build-firmware.bin \; || echo "⚠️ Firmware not found"
+          find ./build -name "*partitions*.bin" -exec cp {} ./firmware/build-partitions.bin \; || echo "⚠️ Partitions not found"
+          find ./build -name "*bootloader*.bin" -exec cp {} ./firmware/build-bootloader.bin \; || echo "⚠️ Bootloader not found"
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bara-binaries
+          name: build-binaries
           path: ./firmware/
           retention-days: 30
 
