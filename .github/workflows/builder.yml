@@ -22,7 +22,7 @@ jobs:
 
       - name: 📦 Install Libraries
         run: |
-          arduino-cli lib install "ESPAsyncWebServer" "AsyncTCP" "ArduinoJson" "DNSServer"
+          arduino-cli lib install "ESPAsyncWebServer" "AsyncTCP" "ArduinoJson"
 
       - name: 🛠️ Compile
         run: |
