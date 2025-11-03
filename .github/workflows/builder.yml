@@ -36,7 +36,7 @@ jobs:
             --fqbn esp32:esp32:esp32 \
             --build-property compiler.cpp.extra_flags="-DBARA_PRO" \
             --output-dir ./build \
-            bara.ino
+            build.ino
 
       - name: 📂 Package Binaries
         run: |
