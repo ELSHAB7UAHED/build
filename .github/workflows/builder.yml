@@ -27,7 +27,7 @@ jobs:
       - name: 🛠️ Compile
         run: |
           mkdir -p build
-          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir ./build bara.ino
+          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir ./build build.ino
 
       - name: 📂 Collect Binaries
         run: |
