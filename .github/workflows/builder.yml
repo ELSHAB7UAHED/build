@@ -133,7 +133,7 @@ jobs:
         EOF
         
     - name: 📄 Upload Flash Instructions
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: flash-instructions
         path: FLASH_INSTRUCTIONS.txt
