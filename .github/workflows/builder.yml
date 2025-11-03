@@ -1,78 +1,71 @@
-name: Build BARA Firmware
+# builder.yml
+name: Build BARA Firmware for ESP32
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python (required by arduino-cli)
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Install arduino-cli
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          echo "$HOME/bin" >> $GITHUB_PATH
+      - name: Install PlatformIO Core
+        run: pip install platformio
 
-      - name: Initialize arduino-cli
+      - name: Install required libraries
         run: |
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
-          arduino-cli lib install "ESPAsyncWebServer" "AsyncTCP" "ArduinoJson" "DNSServer"
+          pio pkg install --lib "me-no-dev/ESPAsyncWebServer"
+          pio pkg install --lib "bblanchon/ArduinoJson"
 
-      - name: Compile sketch
-        run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32 --build-path ./build ./bara.ino
+      - name: Build firmware
+        run: pio run -e esp32dev
 
-      - name: Merge binary (bootloader + partitions + app)
+      - name: Merge binaries into merged.bin (offset 0x0)
         run: |
+          pio run -t buildprog
           python3 -c "
-import sys, os, struct
-bootloader = './build/bara.ino.bootloader.bin'
-partitions = './build/bara.ino.partitions.bin'
-app = './build/bara.ino.bin'
+import os, sys
+from pathlib import Path
+
+build_dir = Path('.pio/build/esp32dev')
+bootloader = build_dir / 'bootloader.bin'
+partitions = build_dir / 'partitions.bin'
+firmware = build_dir / 'firmware.bin'
 merged = 'merged.bin'
 
-# ESP32 default offsets
-BOOTLOADER_ADDR = 0x1000
-PARTITIONS_ADDR = 0x8000
-APP_ADDR = 0x10000
+# Get flash offsets
+BOOTLOADER_OFFSET = 0x1000
+PARTITIONS_OFFSET = 0x8000
+FIRMWARE_OFFSET = 0x10000
 
-# Create 4MB flash image filled with 0xFF (common practice)
-flash_size = 4 * 1024 * 1024
-flash = bytearray([0xFF] * flash_size)
-
-def write_file_at_offset(filename, offset):
-    if os.path.exists(filename):
-        with open(filename, 'rb') as f:
-            data = f.read()
-            flash[offset:offset + len(data)] = data
-            print(f'Wrote {filename} at 0x{offset:06X}')
-    else:
-        print(f'Warning: {filename} not found')
-
-write_file_at_offset(bootloader, BOOTLOADER_ADDR)
-write_file_at_offset(partitions, PARTITIONS_ADDR)
-write_file_at_offset(app, APP_ADDR)
-
+# Create empty file up to FIRMWARE_OFFSET + size
 with open(merged, 'wb') as f:
-    f.write(flash)
-print(f'✅ Merged binary created: {merged} (4MB, app at 0x{APP_ADDR:X})')
+    f.write(b'\xff' * (FIRMWARE_OFFSET + firmware.stat().st_size))
+
+def write_at_offset(file_path, offset):
+    with open(file_path, 'rb') as src, open(merged, 'r+b') as dst:
+        dst.seek(offset)
+        dst.write(src.read())
+
+write_at_offset(bootloader, BOOTLOADER_OFFSET)
+write_at_offset(partitions, PARTITIONS_OFFSET)
+write_at_offset(firmware, FIRMWARE_OFFSET)
+
+print(f'Merged binary created: {merged}')
 "
 
-      - name: Upload merged.bin artifact
+      - name: Upload merged.bin as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BARA_firmware
+          name: BARA-ESP32-merged-bin
           path: merged.bin
