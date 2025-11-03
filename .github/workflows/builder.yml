@@ -1,361 +1,78 @@
-name: 🩸 BARA ESP32 Builder
+name: Build BARA Firmware
 
 on:
   push:
-    branches: [ main, master, dev ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: 📥 Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      - name: Set up Python (required by arduino-cli)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
-    - name: 📦 Cache PlatformIO
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.platformio
-          .pio
-        key: ${{ runner.os }}-pio-${{ hashFiles('**/platformio.ini') }}
-        restore-keys: |
-          ${{ runner.os }}-pio-
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-    - name: ⚙️ Install PlatformIO Core
-      run: |
-        pip install --upgrade platformio
-        pio --version
+      - name: Initialize arduino-cli
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install "ESPAsyncWebServer" "AsyncTCP" "ArduinoJson" "DNSServer"
 
-    - name: 🔧 Create PlatformIO Project Structure
-      run: |
-        mkdir -p src
-        mkdir -p data
-        
-    - name: 📝 Create platformio.ini
-      run: |
-        cat > platformio.ini << 'EOF'
-        [env:esp32dev]
-        platform = espressif32
-        board = esp32dev
-        framework = arduino
-        
-        ; Serial Monitor Settings
-        monitor_speed = 115200
-        monitor_filters = esp32_exception_decoder
-        
-        ; Build Settings
-        board_build.partitions = huge_app.csv
-        board_build.flash_mode = dio
-        board_build.f_cpu = 240000000L
-        board_build.f_flash = 80000000L
-        
-        ; Upload Settings
-        upload_speed = 921600
-        
-        ; Library Dependencies
-        lib_deps = 
-            me-no-dev/ESPAsyncWebServer@^1.2.3
-            me-no-dev/AsyncTCP@^1.1.1
-            bblanchon/ArduinoJson@^6.21.3
-        
-        ; Build Flags
-        build_flags = 
-            -DCORE_DEBUG_LEVEL=0
-            -DBOARD_HAS_PSRAM
-            -mfix-esp32-psram-cache-issue
-            -DARDUINO_RUNNING_CORE=1
-            -DARDUINO_EVENT_RUNNING_CORE=1
-        
-        ; Extra Scripts for Merging
-        extra_scripts = post:merge_bins.py
-        EOF
+      - name: Compile sketch
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32 --build-path ./build ./bara.ino
 
-    - name: 🐍 Create Merge Script
-      run: |
-        cat > merge_bins.py << 'EOF'
-        Import("env")
-        import os
-        import shutil
-        
-        def merge_bins(source, target, env):
-            print("=" * 60)
-            print("🩸 BARA - Merging firmware binaries...")
-            print("=" * 60)
-            
-            # Get build directory
-            build_dir = env.subst("$BUILD_DIR")
-            project_dir = env.subst("$PROJECT_DIR")
-            
-            # Binary files to merge
-            bootloader = os.path.join(env.subst("$PLATFORM_DIR"), 
-                                     "packages", "framework-arduinoespressif32", 
-                                     "tools", "sdk", "esp32", "bin", "bootloader_dio_80m.bin")
-            partitions = os.path.join(build_dir, "partitions.bin")
-            boot_app = os.path.join(env.subst("$PLATFORM_DIR"), 
-                                   "packages", "framework-arduinoespressif32", 
-                                   "tools", "partitions", "boot_app0.bin")
-            firmware = os.path.join(build_dir, "firmware.bin")
-            
-            # Output merged binary
-            merged_bin = os.path.join(project_dir, "bara_merged.bin")
-            
-            # Check if all files exist
-            files_to_check = {
-                "Bootloader": bootloader,
-                "Partitions": partitions,
-                "Boot App": boot_app,
-                "Firmware": firmware
-            }
-            
-            print("\n📋 Checking required files:")
-            all_exist = True
-            for name, path in files_to_check.items():
-                exists = os.path.exists(path)
-                status = "✅" if exists else "❌"
-                print(f"{status} {name}: {path}")
-                if not exists:
-                    all_exist = False
-            
-            if not all_exist:
-                print("\n⚠️  Some files are missing. Attempting alternative merge...")
-                # Try alternative bootloader location
-                bootloader_alt = os.path.join(build_dir, "bootloader.bin")
-                if os.path.exists(bootloader_alt):
-                    bootloader = bootloader_alt
-                    print(f"✅ Found alternative bootloader: {bootloader}")
-            
-            # Use esptool to merge
-            try:
-                # Get esptool path
-                esptool_path = os.path.join(env.subst("$PYTHONEXE").replace("python", ""), "esptool.py")
-                if not os.path.exists(esptool_path):
-                    # Try finding esptool in PATH
-                    import shutil
-                    esptool_cmd = shutil.which("esptool.py")
-                    if esptool_cmd:
-                        esptool_path = esptool_cmd
-                
-                # Build merge command
-                merge_cmd = [
-                    env.subst("$PYTHONEXE"),
-                    "-m", "esptool",
-                    "--chip", "esp32",
-                    "merge_bin",
-                    "-o", merged_bin,
-                    "--flash_mode", "dio",
-                    "--flash_freq", "80m",
-                    "--flash_size", "4MB",
-                    "0x1000", bootloader,
-                    "0x8000", partitions,
-                    "0xe000", boot_app,
-                    "0x10000", firmware
-                ]
-                
-                print("\n🔧 Executing merge command...")
-                result = env.Execute(" ".join(merge_cmd))
-                
-                if result == 0 and os.path.exists(merged_bin):
-                    file_size = os.path.getsize(merged_bin) / 1024
-                    print("\n" + "=" * 60)
-                    print(f"✅ SUCCESS! Merged binary created:")
-                    print(f"📦 File: bara_merged.bin")
-                    print(f"📏 Size: {file_size:.2f} KB")
-                    print(f"📍 Location: {merged_bin}")
-                    print("\n🔥 Flash with:")
-                    print(f"   esptool.py --chip esp32 write_flash 0x0 bara_merged.bin")
-                    print("=" * 60)
-                else:
-                    print("\n⚠️  Merge command failed, creating manual merge...")
-                    manual_merge(bootloader, partitions, boot_app, firmware, merged_bin)
-            
-            except Exception as e:
-                print(f"\n❌ Error during merge: {str(e)}")
-                print("Attempting manual merge...")
-                manual_merge(bootloader, partitions, boot_app, firmware, merged_bin)
-        
-        def manual_merge(bootloader, partitions, boot_app, firmware, output):
-            """Manual binary merge if esptool fails"""
-            try:
-                print("\n🔨 Creating manual merged binary...")
-                
-                with open(output, 'wb') as outfile:
-                    # Write bootloader at 0x1000
-                    outfile.write(b'\xFF' * 0x1000)
-                    with open(bootloader, 'rb') as f:
-                        outfile.write(f.read())
-                    
-                    # Pad to 0x8000
-                    current_pos = outfile.tell()
-                    outfile.write(b'\xFF' * (0x8000 - current_pos))
-                    
-                    # Write partitions at 0x8000
-                    with open(partitions, 'rb') as f:
-                        outfile.write(f.read())
-                    
-                    # Pad to 0xe000
-                    current_pos = outfile.tell()
-                    outfile.write(b'\xFF' * (0xe000 - current_pos))
-                    
-                    # Write boot_app0 at 0xe000
-                    with open(boot_app, 'rb') as f:
-                        outfile.write(f.read())
-                    
-                    # Pad to 0x10000
-                    current_pos = outfile.tell()
-                    outfile.write(b'\xFF' * (0x10000 - current_pos))
-                    
-                    # Write firmware at 0x10000
-                    with open(firmware, 'rb') as f:
-                        outfile.write(f.read())
-                
-                file_size = os.path.getsize(output) / 1024
-                print(f"\n✅ Manual merge successful!")
-                print(f"📦 Size: {file_size:.2f} KB")
-                
-            except Exception as e:
-                print(f"\n❌ Manual merge failed: {str(e)}")
-        
-        # Add post-build action
-        env.AddPostAction("$BUILD_DIR/firmware.bin", merge_bins)
-        EOF
+      - name: Merge binary (bootloader + partitions + app)
+        run: |
+          python3 -c "
+import sys, os, struct
+bootloader = './build/bara.ino.bootloader.bin'
+partitions = './build/bara.ino.partitions.bin'
+app = './build/bara.ino.bin'
+merged = 'merged.bin'
 
-    - name: 📂 Copy Source Code
-      run: |
-        # إذا كان الكود في ملف bara.ino في المجلد الرئيسي
-        if [ -f "bara.ino" ]; then
-          cp bara.ino src/bara.cpp
-        # إذا كان في مجلد src
-        elif [ -f "src/bara.ino" ]; then
-          cp src/bara.ino src/bara.cpp
-        # إذا كان اسم الملف مختلف
-        elif [ -f "BARA.ino" ]; then
-          cp BARA.ino src/bara.cpp
-        # إذا كان الكود موجود بالفعل كملف cpp
-        elif [ -f "src/bara.cpp" ]; then
-          echo "Source file already in correct location"
-        else
-          echo "⚠️  Warning: Source file not found!"
-          echo "Creating placeholder file..."
-          echo "// BARA WiFi Toolkit" > src/bara.cpp
-          echo "void setup() {}" >> src/bara.cpp
-          echo "void loop() {}" >> src/bara.cpp
-        fi
+# ESP32 default offsets
+BOOTLOADER_ADDR = 0x1000
+PARTITIONS_ADDR = 0x8000
+APP_ADDR = 0x10000
 
-    - name: 🔨 Build Firmware
-      run: |
-        echo "🔨 Starting build process..."
-        pio run -e esp32dev -v
+# Create 4MB flash image filled with 0xFF (common practice)
+flash_size = 4 * 1024 * 1024
+flash = bytearray([0xFF] * flash_size)
 
-    - name: 📦 Prepare Artifacts
-      run: |
-        mkdir -p release
-        
-        # Copy merged binary if it exists
-        if [ -f "bara_merged.bin" ]; then
-          cp bara_merged.bin release/
-          echo "✅ Merged binary copied"
-        fi
-        
-        # Copy individual binaries as backup
-        if [ -f ".pio/build/esp32dev/firmware.bin" ]; then
-          cp .pio/build/esp32dev/firmware.bin release/bara_firmware.bin
-          echo "✅ Firmware binary copied"
-        fi
-        
-        if [ -f ".pio/build/esp32dev/bootloader.bin" ]; then
-          cp .pio/build/esp32dev/bootloader.bin release/
-          echo "✅ Bootloader binary copied"
-        fi
-        
-        if [ -f ".pio/build/esp32dev/partitions.bin" ]; then
-          cp .pio/build/esp32dev/partitions.bin release/
-          echo "✅ Partitions binary copied"
-        fi
-        
-        # Create flash instructions
-        cat > release/FLASH_INSTRUCTIONS.txt << 'EOF'
-        🩸 BARA WiFi Toolkit - Flash Instructions
-        ==========================================
-        
-        Method 1: Flash Merged Binary (RECOMMENDED)
-        --------------------------------------------
-        esptool.py --chip esp32 --port COM3 --baud 921600 write_flash 0x0 bara_merged.bin
-        
-        Method 2: Flash Individual Binaries
-        ------------------------------------
-        esptool.py --chip esp32 --port COM3 --baud 921600 write_flash \
-          0x1000 bootloader.bin \
-          0x8000 partitions.bin \
-          0xe000 boot_app0.bin \
-          0x10000 bara_firmware.bin
-        
-        Notes:
-        - Replace COM3 with your ESP32 port (COM3 on Windows, /dev/ttyUSB0 on Linux)
-        - Use 115200 baud if 921600 fails
-        - Hold BOOT button on ESP32 during flash if needed
-        
-        Web Interface:
-        - Connect to WiFi: "bara"
-        - Password: "A7med@Elshab7"
-        - Navigate to: http://192.168.4.1
-        
-        ⚠️  WARNING: For authorized testing only!
-        EOF
-        
-        echo ""
-        echo "📋 Release contents:"
-        ls -lh release/
+def write_file_at_offset(filename, offset):
+    if os.path.exists(filename):
+        with open(filename, 'rb') as f:
+            data = f.read()
+            flash[offset:offset + len(data)] = data
+            print(f'Wrote {filename} at 0x{offset:06X}')
+    else:
+        print(f'Warning: {filename} not found')
 
-    - name: 📤 Upload Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: bara-esp32-firmware
-        path: release/
-        retention-days: 30
+write_file_at_offset(bootloader, BOOTLOADER_ADDR)
+write_file_at_offset(partitions, PARTITIONS_ADDR)
+write_file_at_offset(app, APP_ADDR)
 
-    - name: 📊 Build Summary
-      run: |
-        echo "## 🩸 BARA Build Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ Build completed successfully!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📦 Generated Files:" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "release/bara_merged.bin" ]; then
-          SIZE=$(ls -lh release/bara_merged.bin | awk '{print $5}')
-          echo "- **bara_merged.bin** (${SIZE}) - Ready to flash at 0x0" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "release/bara_firmware.bin" ]; then
-          SIZE=$(ls -lh release/bara_firmware.bin | awk '{print $5}')
-          echo "- **bara_firmware.bin** (${SIZE})" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 🔥 Flash Command:" >> $GITHUB_STEP_SUMMARY
-        echo '```bash' >> $GITHUB_STEP_SUMMARY
-        echo 'esptool.py --chip esp32 --port COM3 write_flash 0x0 bara_merged.bin' >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
+with open(merged, 'wb') as f:
+    f.write(flash)
+print(f'✅ Merged binary created: {merged} (4MB, app at 0x{APP_ADDR:X})')
+"
 
-    - name: 🎉 Build Complete
-      run: |
-        echo ""
-        echo "=================================================="
-        echo "🩸 BARA WiFi Toolkit Build Complete! 🩸"
-        echo "=================================================="
-        echo ""
-        echo "✅ Firmware ready for ESP32"
-        echo "📦 Download artifacts from GitHub Actions"
-        echo "🔥 Flash and hack responsibly!"
-        echo ""
-        echo "=================================================="
+      - name: Upload merged.bin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BARA_firmware
+          path: merged.bin
