@@ -1,0 +1,50 @@
+# ============================================================================
+# 🩸 B A R A — F I R M W A R E   B U I L D E R   C O N F I G
+# ============================================================================
+# PlatformIO Project Configuration File
+# Generates firmware.bin for ESP32 Wi-Fi Toolkit (Deauth + Scanner + Captive Portal)
+# Developed by: Ahmed Nour Ahmed | Qena, Egypt
+# ============================================================================
+
+platformio:
+  description: "BARA Wi-Fi Toolkit — Advanced ESP32 Penetration Testing Firmware"
+  version: "2.0"
+
+# -------------------------- PLATFORM & BOARD --------------------------
+platform: espressif32
+board: esp32dev                 # Works with most ESP32 boards (DevKitC, NodeMCU, etc.)
+framework: arduino
+
+# -------------------------- BUILD FLAGS --------------------------
+build_flags:
+  - '-DBOARD_HAS_PSRAM'         # Enable PSRAM if available (not required but safe)
+  - '-DCORE_DEBUG_LEVEL=0'      # Disable debug logs for speed
+  - '-DARDUINO_USB_MODE=0'      # Disable USB CDC (saves RAM)
+  - '-DLOG_LOCAL_LEVEL=0'       # Suppress ESP-IDF logs
+  - '-Os'                       # Optimize for size (faster upload, less flash usage)
+
+# -------------------------- UPLOAD SETTINGS --------------------------
+upload_speed: 921600            # Fast upload
+monitor_speed: 115200
+
+# -------------------------- PARTITIONS --------------------------
+# Custom partition table for max app space + OTA readiness
+board_build.partitions: min_spiffs.csv
+
+# -------------------------- LIBRARIES --------------------------
+lib_deps:
+  - me-no-dev/ESPAsyncWebServer @ ^1.2.3
+  - me-no-dev/AsyncTCP @ ^1.1.1
+  - bblanchon/ArduinoJson @ ^6.21.1
+  - https://github.com/espressif/arduino-esp32.git
+
+# -------------------------- PRE-BUILD SCRIPTS (Optional) --------------------------
+# None needed — all in one .ino file
+
+# -------------------------- OUTPUT CONTROL --------------------------
+# This ensures a clean firmware.bin is generated in /dist
+extra_scripts:
+  - post:pio_builder.py
+
+# -------------------------- CUSTOM FIRMWARE NAME --------------------------
+custom_fw_name: bara_toolkit_v2.0.bin
