@@ -1,50 +1,67 @@
 # ============================================================================
-# 🩸 B A R A — F I R M W A R E   B U I L D E R   C O N F I G
+# 🩸 BARA BUILD WORKFLOW — AUTOMATIC BIN GENERATOR FOR ESP32 🩸
+# Developed by Ahmed Nour Ahmed | Qena, Egypt
 # ============================================================================
-# PlatformIO Project Configuration File
-# Generates firmware.bin for ESP32 Wi-Fi Toolkit (Deauth + Scanner + Captive Portal)
-# Developed by: Ahmed Nour Ahmed | Qena, Egypt
-# ============================================================================
+name: 🩸 Build BARA Firmware
 
-platformio:
-  description: "BARA Wi-Fi Toolkit — Advanced ESP32 Penetration Testing Firmware"
-  version: "2.0"
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
 
-# -------------------------- PLATFORM & BOARD --------------------------
-platform: espressif32
-board: esp32dev                 # Works with most ESP32 boards (DevKitC, NodeMCU, etc.)
-framework: arduino
+jobs:
+  build:
+    name: 🔥 Build for ESP32
+    runs-on: ubuntu-latest
 
-# -------------------------- BUILD FLAGS --------------------------
-build_flags:
-  - '-DBOARD_HAS_PSRAM'         # Enable PSRAM if available (not required but safe)
-  - '-DCORE_DEBUG_LEVEL=0'      # Disable debug logs for speed
-  - '-DARDUINO_USB_MODE=0'      # Disable USB CDC (saves RAM)
-  - '-DLOG_LOCAL_LEVEL=0'       # Suppress ESP-IDF logs
-  - '-Os'                       # Optimize for size (faster upload, less flash usage)
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
 
-# -------------------------- UPLOAD SETTINGS --------------------------
-upload_speed: 921600            # Fast upload
-monitor_speed: 115200
+      - name: 🧰 Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v1.5.0
 
-# -------------------------- PARTITIONS --------------------------
-# Custom partition table for max app space + OTA readiness
-board_build.partitions: min_spiffs.csv
+      - name: 🔌 Add ESP32 Board Support
+        run: |
+          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 
-# -------------------------- LIBRARIES --------------------------
-lib_deps:
-  - me-no-dev/ESPAsyncWebServer @ ^1.2.3
-  - me-no-dev/AsyncTCP @ ^1.1.1
-  - bblanchon/ArduinoJson @ ^6.21.1
-  - https://github.com/espressif/arduino-esp32.git
+      - name: 📦 Install Required Libraries
+        run: |
+          arduino-cli lib install \
+            "ESPAsyncWebServer" \
+            "AsyncTCP" \
+            "ArduinoJson" \
+            "DNSServer"
 
-# -------------------------- PRE-BUILD SCRIPTS (Optional) --------------------------
-# None needed — all in one .ino file
+      - name: 🛠️ Compile BARA Firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --build-property compiler.cpp.extra_flags="-DBARA_PRODUCTION" \
+            --output-dir ./build \
+            bara.ino
 
-# -------------------------- OUTPUT CONTROL --------------------------
-# This ensures a clean firmware.bin is generated in /dist
-extra_scripts:
-  - post:pio_builder.py
+      - name: 📂 Ensure build directory exists
+        run: mkdir -p ./firmware
 
-# -------------------------- CUSTOM FIRMWARE NAME --------------------------
-custom_fw_name: bara_toolkit_v2.0.bin
+      - name: 🔄 Rename and organize output files
+        run: |
+          mv ./build/*firmware*.bin ./firmware/bara-firmware.bin || echo "Firmware bin not found"
+          mv ./build/*partitions*.bin ./firmware/bara-partitions.bin || echo "Partitions bin not found"
+          mv ./build/*bootloader*.bin ./firmware/bara-bootloader.bin || echo "Bootloader bin not found"
+
+      - name: 📤 Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bara-esp32-firmware
+          path: ./firmware/
+          retention-days: 30
+
+      - name: ✅ Build Summary
+        run: |
+          echo "🧾 BARA firmware built successfully!"
+          echo "📁 Artifacts: bara-firmware.bin, bara-partitions.bin, bara-bootloader.bin"
+          ls -lh ./firmware/
