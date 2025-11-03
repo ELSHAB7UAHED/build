@@ -1,109 +1,107 @@
-# =============================================================================
-# 🩸 BARA V3.0 — ULTIMATE ESP32 WARFARE BUILDER CONFIG 🩸
-# =============================================================================
-# Developed by: Ahmed Nour Ahmed | Qena, Egypt
-# Purpose: Automated, professional-grade build pipeline for BARA V3.0
-# Output: merged.bin (flashable from 0x0) containing full firmware
-# =============================================================================
-
-name: BARA V3.0 Build Pipeline
+name: 🩸 BARA V3.0 — ULTIMATE ESP32 BUILDER
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ main, master ]
+  workflow_dispatch:  # Manual trigger
+
+env:
+  PROJECT_NAME: BARA_V3
+  SKETCH_PATH: build/bara.ino
+  FQBN: esp32:esp32:esp32doit-devkit-v1
+  CORE_VERSION: 2.0.17  # Arduino ESP32 Core version
+  OUTPUT_BIN: ${{ github.workspace }}/build/BARA_V3_MERGED.bin
 
 jobs:
   build:
-    name: 🔥 Build BARA V3.0 Firmware
     runs-on: ubuntu-latest
-
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 📦 Set up Python
-        uses: actions/setup-python@v5
+      - name: 🛠️ Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
         with:
-          python-version: '3.11'
+          version: latest
 
-      - name: 🛠️ Install PlatformIO Core
+      - name: 💾 Install ESP32 Core
         run: |
-          pip install --upgrade pip
-          pip install platformio
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@$CORE_VERSION
 
-      - name: 📁 Create PlatformIO Project Structure
+      - name: 📦 Install Required Libraries
         run: |
-          mkdir -p .pio/src
-          mkdir -p .pio/lib
-          cp bara.ino .pio/src/main.cpp
-          cat > .pio/platformio.ini << 'EOF'
-[env:esp32dev]
-platform = espressif32
-board = esp32dev
-framework = arduino
-monitor_speed = 115200
-board_build.partitions = min_spiffs.csv
-lib_deps =
-    me-no-dev/ESP Async WebServer @ ^1.2.3
-    bblanchon/ArduinoJson @ ^6.21.1
-    ; DNSServer is built-in
-build_flags =
-    -DCORE_DEBUG_LEVEL=0
-    -DBOARD_HAS_PSRAM
-    -mfix-esp32-psram-cache-issue
-upload_protocol = espota
-EOF
+          arduino-cli lib install \
+            "ESPAsyncWebServer" \
+            "AsyncTCP" \
+            "ArduinoJson" \
+            "DNSServer"
 
-      - name: 🧱 Build Firmware
+      - name: 🔍 Verify Sketch Path
         run: |
-          cd .pio
-          pio run -e esp32dev
+          if [ ! -f "$SKETCH_PATH" ]; then
+            echo "❌ Sketch not found at $SKETCH_PATH"
+            exit 1
+          fi
+          echo "✅ Sketch found. Building..."
 
-      - name: 🧪 Locate Build Artifacts
-        id: artifacts
+      - name: 🧱 Compile Project
         run: |
-          FW_DIR=$(find .pio/build -name "*.bin" -exec dirname {} \; | head -n1)
-          echo "fw_dir=$FW_DIR" >> $GITHUB_OUTPUT
-          ls -la "$FW_DIR"
+          arduino-cli compile \
+            --fqbn $FQBN \
+            --output-dir ./build \
+            --build-property "compiler.cpp.extra_flags=-DBARA_V3" \
+            --warnings all \
+            $SKETCH_PATH
 
-      - name: 🧩 Merge Firmware into Single Binary (0x0)
+      - name: 🔗 Locate Compiled .bin
+        id: find_bin
         run: |
-          FW_DIR="${{ steps.artifacts.outputs.fw_dir }}"
-          cd "$FW_DIR"
-          # Download partition table and bootloader if needed
-          python3 -c "
-import os, sys, struct
-offsets = [
-    ('bootloader.bin', 0x1000),
-    ('partitions.bin', 0x8000),
-    ('firmware.bin', 0x10000)
-]
-merged_size = 0x400000  # 4MB flash
-with open('merged.bin', 'wb') as f:
-    f.write(b'\\xff' * merged_size)
-    for fname, offset in offsets:
-        if os.path.exists(fname):
-            with open(fname, 'rb') as infile:
-                data = infile.read()
-                f.seek(offset)
-                f.write(data)
-                print(f'✅ Written {fname} at 0x{offset:06x}')
-        else:
-            print(f'⚠️ {fname} not found')
-"
+          BIN_FILE=$(find ./build -name "*.ino.bin" | head -n1)
+          if [ -z "$BIN_FILE" ]; then
+            echo "❌ No .bin file found after compilation"
+            exit 1
+          fi
+          echo "BIN_PATH=$BIN_FILE" >> $GITHUB_ENV
+          echo "✅ Compiled binary: $BIN_FILE"
 
-      - name: 📤 Upload merged.bin Artifact
+      - name: 🧬 Extract Bootloader, Partitions & App
+        run: |
+          # Download tools
+          wget -q https://github.com/espressif/esptool/releases/latest/download/esptool-v4.7.0-linux-amd64.tar.gz
+          tar -xzf esptool-v4.7.0-linux-amd64.tar.gz
+          sudo mv esptool-v4.7.0-linux-amd64/esptool /usr/local/bin/
+          rm -rf esptool-v4.7.0-linux-amd64*
+
+          # Fetch tools from Arduino core
+          CORE_PATH=$(arduino-cli core search esp32:esp32 --format json | jq -r '.[0].InstalledPath')
+          BOOTLOADER="$CORE_PATH/tools/sdk/esp32/bin/bootloader_dio_40m.bin"
+          PARTITIONS="$CORE_PATH/tools/partitions/boot_app0.bin"
+
+          if [ ! -f "$BOOTLOADER" ] || [ ! -f "$PARTITIONS" ]; then
+            echo "❌ Bootloader or partitions not found in core path"
+            exit 1
+          fi
+
+          echo "✅ Bootloader: $BOOTLOADER"
+          echo "✅ Partitions: $PARTITIONS"
+
+      - name: 🔥 Merge into Single Binary (0x0)
+        run: |
+          esptool.py --chip esp32 merge_bin \
+            -o $OUTPUT_BIN \
+            0x1000 "${{ env.BOOTLOADER }}" \
+            0x8000 "${{ env.PARTITIONS }}" \
+            0x10000 "${{ env.BIN_PATH }}"
+
+      - name: 📤 Upload Final Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bara-v3.0-esp32-merged-bin
-          path: ${{ steps.artifacts.outputs.fw_dir }}/merged.bin
+          name: BARA_V3_MERGED.bin
+          path: ${{ env.OUTPUT_BIN }}
           retention-days: 7
 
-      - name: ✅ Build Summary
+      - name: ✅ Success Message
         run: |
-          echo "🩸 BARA V3.0 BUILD SUCCESSFUL!"
-          echo "📁 Download 'merged.bin' from Artifacts to flash directly at 0x0."
-          echo "🔧 Use: esptool.py --chip esp32 write_flash 0x0 merged.bin"
+          echo "🩸 BARA V3.0 BUILT SUCCESSFULLY!"
+          echo "📁 Artifact: BARA_V3_MERGED.bin ready for flashing at 0x0"
