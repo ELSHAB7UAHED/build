@@ -1,34 +1,34 @@
 # ============================================================================
-# 🩸 BARA BUILD WORKFLOW — AUTOMATIC BIN GENERATOR FOR ESP32 🩸
+# 🩸 BARA — ESP32 FIRMWARE AUTOMATED BUILDER (GITHUB ACTIONS)
 # Developed by Ahmed Nour Ahmed | Qena, Egypt
 # ============================================================================
-name: 🩸 Build BARA Firmware
+name: 🩸 Build BARA Firmware for ESP32
 
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:  # Allows manual trigger from GitHub UI
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   build:
-    name: 🔥 Build for ESP32
-    runs-on: ubuntu-latest
+    name: 🔥 Build ESP32 Binary
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🧰 Set up Arduino CLI
-        uses: arduino/setup-arduino-cli@v1.5.0
+      - name: 🧰 Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@main  # ✅ Fixed: v1.5.0 doesn't exist
 
-      - name: 🔌 Add ESP32 Board Support
+      - name: 🔌 Add ESP32 Core
         run: |
-          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          arduino-cli core install esp32:esp32 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
-      - name: 📦 Install Required Libraries
+      - name: 📦 Install Libraries
         run: |
           arduino-cli lib install \
             "ESPAsyncWebServer" \
@@ -36,32 +36,30 @@ jobs:
             "ArduinoJson" \
             "DNSServer"
 
-      - name: 🛠️ Compile BARA Firmware
+      - name: 🛠️ Compile Project
         run: |
           arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
-            --build-property compiler.cpp.extra_flags="-DBARA_PRODUCTION" \
+            --build-property compiler.cpp.extra_flags="-DBARA_PRO" \
             --output-dir ./build \
             bara.ino
 
-      - name: 📂 Ensure build directory exists
-        run: mkdir -p ./firmware
-
-      - name: 🔄 Rename and organize output files
+      - name: 📂 Prepare Firmware Directory
         run: |
-          mv ./build/*firmware*.bin ./firmware/bara-firmware.bin || echo "Firmware bin not found"
-          mv ./build/*partitions*.bin ./firmware/bara-partitions.bin || echo "Partitions bin not found"
-          mv ./build/*bootloader*.bin ./firmware/bara-bootloader.bin || echo "Bootloader bin not found"
+          mkdir -p firmware
+          cp ./build/*firmware*.bin ./firmware/bara-firmware.bin 2>/dev/null || echo "⚠️ Firmware bin not found"
+          cp ./build/*partitions*.bin ./firmware/bara-partitions.bin 2>/dev/null || echo "⚠️ Partitions bin not found"
+          cp ./build/*bootloader*.bin ./firmware/bara-bootloader.bin 2>/dev/null || echo "⚠️ Bootloader bin not found"
 
-      - name: 📤 Upload firmware artifacts
+      - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bara-esp32-firmware
+          name: bara-esp32-binaries
           path: ./firmware/
           retention-days: 30
 
-      - name: ✅ Build Summary
+      - name: 🧾 Summary
         run: |
-          echo "🧾 BARA firmware built successfully!"
-          echo "📁 Artifacts: bara-firmware.bin, bara-partitions.bin, bara-bootloader.bin"
+          echo "✅ BARA build completed!"
+          echo "📁 Output files:"
           ls -lh ./firmware/
